@@ -1,61 +1,34 @@
-# https://github.com/hailo-ai/hailo_model_zoo/blob/master/docs/public_models/HAILO8/HAILO8_face_recognition.rst
-import os
-import cv2
+import hailo_platform.pyhailort as pyhailort
 import numpy as np
-import hailo_platform as hp
+from PIL import Image
 
-# Define paths
-hef_file_path = "ArcFaceMobileFaceNet.hef"
-faces_folder_path = "faces"
+# Path to your HEF file
+hef_file_path = "ArcFaceMobileFaceNet"
 
-# Preprocessing function
-def preprocess_image(image_path, target_size=(112, 112)):
-    image = cv2.imread(image_path)
-    if image is None:
-        raise ValueError(f"Cannot read image at {image_path}")
-    image = cv2.resize(image, target_size)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert to RGB
-    image = image.astype(np.float32) / 255.0  # Normalize to [0, 1]
-    image = np.expand_dims(image, axis=0)  # Add batch dimension
-    return image
+# Function to preprocess the image
+def preprocess_image(image_path, input_shape):
+    image = Image.open(image_path).convert("RGB")
+    image = image.resize((input_shape[1], input_shape[0]))  # Resize to model input dimensions
+    image_array = np.array(image) / 255.0  # Normalize to [0, 1]
+    return image_array.astype(np.float32)
 
-# Load and preprocess all face images in the folder
-def load_faces(folder_path):
-    face_images = []
-    file_names = []
-    for file_name in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, file_name)
-        if os.path.isfile(file_path) and file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-            preprocessed_image = preprocess_image(file_path)
-            face_images.append(preprocessed_image)
-            file_names.append(file_name)
-    return np.vstack(face_images), file_names
+# Load the HEF file
+with pyhailort.Device() as device:
+    with pyhailort.VdmaConfigManager(device, hef_file_path) as vdma_manager:
+        # Get input/output sizes
+        input_vstream_info = vdma_manager.get_input_vstreams()[0]
+        output_vstream_info = vdma_manager.get_output_vstreams()[0]
+        
+        input_shape = input_vstream_info.shape
+        output_shape = output_vstream_info.shape
+        
+        # Example: Prepare input data
+        image_path = "faces/person1/img0.jpg"  # Replace with your test image
+        input_data = preprocess_image(image_path, input_shape)
+        input_data = np.expand_dims(input_data, axis=0)  # Add batch dimension
 
-# Run inference on the preprocessed images
-def run_inference(input_data):
-    with hp.Hef(hef_file_path) as hef:
-        with hp.Device() as device:
-            network_group = hef.configure(device)
-            with network_group.activate() as runner:
-                input_vstream = runner.get_input_vstreams()[0]
-                output_vstream = runner.get_output_vstreams()[0]
-
-                # Send input data to the device
-                runner.send(input_vstream.name, input_data)
-
-                # Retrieve the inference results
-                output = runner.receive(output_vstream.name)
-                return output
-
-# Main script
-if __name__ == "__main__":
-    # Load and preprocess images
-    face_data, file_names = load_faces(faces_folder_path)
-    print(f"Loaded {len(file_names)} images for inference.")
-
-    # Run inference
-    embeddings = run_inference(face_data)
-
-    # Postprocess and display results
-    for i, file_name in enumerate(file_names):
-        print(f"Embedding for {file_name}: {embeddings[i]}")
+        # Run inference
+        with vdma_manager.create_vstreams() as vstreams:
+            results = vstreams.input[0].write(input_data)
+            output_data = vstreams.output[0].read()
+            print("Inference results:", output_data)
